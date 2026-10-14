@@ -335,14 +335,30 @@
     #viewerWrap{ min-height:34vh; }
     #liveTrialsOverlay{ width:100% !important; min-width:0 !important; }
   }
+
+  /* ---- PWA offline-readiness indicator ---- */
+  #offlineDot{
+    display:inline-block; width:9px; height:9px; border-radius:50%;
+    margin-left:6px; vertical-align:middle; background:#9aa7bb;
+  }
+  #offlineDot[data-state="ready"]{ background:#3ecf8e; }
+  #offlineDot[data-state="preparing"]{ background:#f5a623; }
+  #offlineDot[data-state="unavailable"]{ background:#e5484d; }
+  #swToast{
+    display:none; position:fixed; left:50%; bottom:18px; transform:translateX(-50%);
+    background:rgba(20,25,35,.93); color:#fff; padding:9px 16px; border-radius:8px;
+    font-size:13px; z-index:3000; max-width:90vw; text-align:center;
+    box-shadow:0 4px 16px rgba(0,0,0,.35);
+  }
 </style>
 </head>
 <body>
 <button id="uiMinimizeBtn" data-i18n="uiMinimizeBtn">최소화</button>
+<div id="swToast"></div>
 <div id="app">
   <header>
     <div class="logo"></div>
-    <h1><span data-i18n="appTitle">3D 적재 최적화 프로그램</span> <span style="font-weight:400;color:#9aa7bb;font-size:13px;">v7.02</span></h1>
+    <h1><span data-i18n="appTitle">3D 적재 최적화 프로그램</span> <span style="font-weight:400;color:#9aa7bb;font-size:13px;">v7.03</span> <span id="offlineDot" data-state="preparing"></span></h1>
     <span class="sub" data-i18n="appSubtitle">STEP 파일 기반 포장 박스 적재 계산기</span>
     <div class="headerCopyright">
       <div>Copyright &copy; 2026 | Yongtae.Lee</div>
@@ -3668,6 +3684,9 @@ const I18N = {
   fullscreenBtnExit: {ko:'전체화면 종료', en:'Exit Full Screen'},
   uiMinimizeBtn: {ko:'최소화', en:'Minimize'},
   uiMinimizeBtnExit: {ko:'복원', en:'Restore'},
+  offlineReady: {ko:'✓ 오프라인 사용 준비 완료 (이제 인터넷 없이도 실행됩니다)', en:'✓ Ready for offline use (works without internet now)'},
+  offlinePreparing: {ko:'오프라인용으로 저장 중… 완료 알림이 뜰 때까지 인터넷 연결을 유지하세요', en:'Saving for offline use… stay connected until you see the ready message'},
+  offlineUnavailable: {ko:'오프라인 저장에 실패했습니다. 인터넷에 연결한 상태에서 새로고침하세요', en:'Offline save failed. Reconnect and reload the page'},
   h2_1: {ko:'1. 제품', en:'1. Product'},
   h2_2: {ko:'2. 적재 방향', en:'2. Loading Orientation'},
   h2_3: {ko:'3. 배열 지정', en:'3. Arrangement'},
@@ -6543,6 +6562,48 @@ async function exportResultsToExcel(){
     calcBtn.disabled = false;
   }
 }
+
+// ---- PWA offline-readiness indicator ----
+// Only meaningful when served over http(s) (e.g. GitHub Pages). Opened as a
+// plain local file the page is already fully self-contained, so hide the dot.
+// Green dot = the page is stored for offline use. Orange = still saving: do
+// NOT turn the network off yet. Red = saving failed.
+(function setupOfflineIndicator(){
+  const dot = $('#offlineDot'), toast = $('#swToast');
+  if(!dot || !toast) return;
+  if(!('serviceWorker' in navigator) || !/^https?:$/.test(location.protocol)){ dot.style.display='none'; return; }
+  function setState(s, announce){
+    dot.dataset.state = s;
+    const key = s==='ready' ? 'offlineReady' : s==='preparing' ? 'offlinePreparing' : 'offlineUnavailable';
+    dot.title = t(key);
+    if(announce){
+      toast.textContent = t(key);
+      toast.style.display = 'block';
+      clearTimeout(toast._t);
+      toast._t = setTimeout(()=>{ toast.style.display='none'; }, s==='preparing' ? 8000 : 6000);
+    }
+  }
+  async function cachedOk(){
+    try{
+      const keys = await caches.keys();
+      for(const k of keys){
+        const c = await caches.open(k);
+        if(await c.match('./index.html')) return true;
+      }
+    }catch(e){ /* ignore */ }
+    return false;
+  }
+  (async ()=>{
+    if(await cachedOk()) setState('ready', false); else setState('preparing', true);
+    try{ await Promise.race([navigator.serviceWorker.ready, new Promise(r=>setTimeout(r, 90000))]); }catch(e){ /* ignore */ }
+    for(let i=0;i<30;i++){
+      if(await cachedOk()){ if(dot.dataset.state!=='ready') setState('ready', true); return; }
+      await new Promise(r=>setTimeout(r, 1000));
+    }
+    setState('unavailable', true);
+  })();
+  if(navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(()=>{});
+})();
 
 initViewer();
 toggleProjection(); // default to orthographic (원근 무시)
