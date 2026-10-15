@@ -11,31 +11,6 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
-<script>
-  // PWA: register the service worker so the app works offline after the first visit.
-  // Real failure reasons are kept in window.__sw* so the diagnostics panel
-  // (tap the dot next to the version number) can show them.
-  window.__swLog = [];
-  if('serviceWorker' in navigator){
-    navigator.serviceWorker.addEventListener('message', function(ev){
-      if(ev.data && ev.data.type === 'sw-install-error') window.__swInstallErr = ev.data.msg;
-    });
-    window.addEventListener('load', function(){
-      function track(w){
-        if(!w) return;
-        window.__swLog.push(w.state);
-        w.addEventListener('statechange', function(){ window.__swLog.push(w.state); });
-      }
-      navigator.serviceWorker.register('./sw.js').then(function(reg){
-        window.__swReg = reg;
-        track(reg.installing || reg.waiting || reg.active);
-        reg.addEventListener('updatefound', function(){ track(reg.installing); });
-      }).catch(function(err){
-        window.__swErr = (err && err.name ? err.name + ': ' : '') + (err && err.message ? err.message : String(err));
-      });
-    });
-  }
-</script>
 <title>3D 적재 최적화 프로그램</title>
 <style>
   :root{
@@ -383,7 +358,7 @@
     overflow:auto; font-size:11.5px; line-height:1.45; white-space:pre-wrap; word-break:break-all;
     margin:0 0 10px; flex:1; font-family:var(--mono);
   }
-  .swDiagBtns{ display:flex; gap:8px; justify-content:flex-end; }
+  .swDiagBtns{ display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap; }
   .swDiagBtns button{
     padding:8px 16px; border-radius:6px; border:1px solid var(--border); background:var(--panel-2);
     color:var(--text); font-size:13px; cursor:pointer;
@@ -394,11 +369,11 @@
 <button id="uiMinimizeBtn" data-i18n="uiMinimizeBtn">최소화</button>
 <div id="swToast"></div>
 <div id="swDiag"><div class="swDiagBox"><pre id="swDiagText"></pre>
-<div class="swDiagBtns"><button id="swDiagCopy">복사 / Copy</button><button id="swDiagClose">닫기 / Close</button></div></div></div>
+<div class="swDiagBtns"><button id="swDiagReset">저장 초기화 후 다시 받기</button><button id="swDiagCopy">복사</button><button id="swDiagClose">닫기</button></div></div></div>
 <div id="app">
   <header>
     <div class="logo"></div>
-    <h1><span data-i18n="appTitle">3D 적재 최적화 프로그램</span> <span style="font-weight:400;color:#9aa7bb;font-size:13px;">v7.04</span> <span id="offlineDot" data-state="preparing"></span></h1>
+    <h1><span data-i18n="appTitle">3D 적재 최적화 프로그램</span> <span style="font-weight:400;color:#9aa7bb;font-size:13px;">v7.05</span> <span id="offlineDot" data-state="preparing"></span></h1>
     <span class="sub" data-i18n="appSubtitle">STEP 파일 기반 포장 박스 적재 계산기</span>
     <div class="headerCopyright">
       <div>Copyright &copy; 2026 | Yongtae.Lee</div>
@@ -6603,112 +6578,149 @@ async function exportResultsToExcel(){
   }
 }
 
-// ---- PWA offline-readiness indicator ----
-// Only meaningful when served over http(s) (e.g. GitHub Pages). Opened as a
-// plain local file the page is already fully self-contained, so hide the dot.
-// Green dot = the page is stored for offline use. Orange = still saving: do
-// NOT turn the network off yet. Red = saving failed (tap the dot for the reason).
-(function setupOfflineIndicator(){
-  const dot = $('#offlineDot'), toast = $('#swToast');
-  if(!dot || !toast) return;
-  if(!('serviceWorker' in navigator) || !/^https?:$/.test(location.protocol)){ dot.style.display='none'; return; }
-  dot.addEventListener('click', showOfflineDiagnostics);
-  function setState(s, announce){
-    dot.dataset.state = s;
-    const key = s==='ready' ? 'offlineReady' : s==='preparing' ? 'offlinePreparing' : 'offlineUnavailable';
-    dot.title = t(key);
-    if(announce){
-      toast.textContent = t(key);
-      toast.style.display = 'block';
-      clearTimeout(toast._t);
-      toast._t = setTimeout(()=>{ toast.style.display='none'; }, s==='preparing' ? 8000 : 8000);
-    }
-  }
-  async function cachedOk(){
-    try{
-      const keys = await caches.keys();
-      for(const k of keys){
-        const c = await caches.open(k);
-        if(await c.match('./index.html')) return true;
-      }
-    }catch(e){ /* ignore */ }
-    return false;
-  }
-  (async ()=>{
-    if(await cachedOk()) setState('ready', false); else setState('preparing', true);
-    for(let i=0;i<120;i++){
-      if(await cachedOk()){ if(dot.dataset.state!=='ready') setState('ready', true); return; }
-      if(window.__swErr || window.__swInstallErr) break; // fail fast with a real reason
-      await new Promise(r=>setTimeout(r, 1000));
-    }
-    setState('unavailable', true);
-  })();
-  if(navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(()=>{});
-})();
-
-// Tap the dot next to the version number: shows WHY offline saving works or
-// fails (registration error, install error reported by the service worker,
-// what is in the cache, storage quota) and runs a real download+cache-write
-// test, so a failure on a phone can be diagnosed from one screenshot.
-async function showOfflineDiagnostics(){
-  const box = $('#swDiag'), pre = $('#swDiagText');
-  box.style.display = 'flex';
-  const L = ['v7.04 diagnostics (collecting...)'];
-  const out = ()=>{ pre.textContent = L.join('\n'); };
-  const add = (s)=>{ L.push(s); out(); };
-  const errText = (e)=> (e && e.name ? e.name+': ' : '') + (e && e.message ? e.message : String(e));
-  out();
-  add('URL: '+location.href);
-  add('secureContext: '+window.isSecureContext+' | SW API: '+('serviceWorker' in navigator)+' | Cache API: '+('caches' in window));
-  try{
-    const regs = await navigator.serviceWorker.getRegistrations();
-    add('registrations: '+regs.length);
-    regs.forEach(r=>add('  scope='+r.scope+' installing='+(r.installing?r.installing.state:'-')+' waiting='+(r.waiting?r.waiting.state:'-')+' active='+(r.active?r.active.state:'-')));
-  }catch(e){ add('registrations ERROR: '+errText(e)); }
-  add('page controlled by SW: '+!!(navigator.serviceWorker && navigator.serviceWorker.controller));
-  add('register() error: '+(window.__swErr||'none'));
-  add('install error (reported by SW): '+(window.__swInstallErr||'none'));
-  add('SW state log: '+((window.__swLog||[]).join(' > ')||'(none)'));
-  try{
-    const keys = await caches.keys();
-    if(!keys.length) add('caches: (none)');
-    for(const k of keys){
-      const c = await caches.open(k); const ks = await c.keys();
-      add('cache '+k+': '+ks.length+' files, index.html '+((await c.match('./index.html'))?'YES':'NO'));
-    }
-  }catch(e){ add('caches ERROR: '+errText(e)); }
-  try{
-    if(navigator.storage && navigator.storage.estimate){
-      const est = await navigator.storage.estimate();
-      add('storage: used '+Math.round((est.usage||0)/1048576)+' MB / quota '+Math.round((est.quota||0)/1048576)+' MB');
-    }
-    if(navigator.storage && navigator.storage.persisted) add('persistent storage: '+(await navigator.storage.persisted()));
-  }catch(e){ add('storage ERROR: '+errText(e)); }
-  try{
-    const t0 = performance.now();
-    const r = await fetch('./index.html', {cache:'no-cache'});
-    add('test download: HTTP '+r.status);
-    const blob = await r.blob();
-    add('  size '+(blob.size/1048576).toFixed(1)+' MB in '+Math.round(performance.now()-t0)+' ms');
-    const c = await caches.open('diag-tmp');
-    await c.put('./diag-test', new Response(blob));
-    add('test cache write: OK');
-    await caches.delete('diag-tmp');
-  }catch(e){
-    add('TEST FAILED: '+errText(e));
-    try{ await caches.delete('diag-tmp'); }catch(_){ /* ignore */ }
-  }
-  add('UA: '+navigator.userAgent);
-  L[0] = 'v7.04 diagnostics';
-  out();
-}
-$('#swDiagClose').addEventListener('click', ()=>{ $('#swDiag').style.display='none'; });
-$('#swDiagCopy').addEventListener('click', ()=>{
-  try{ navigator.clipboard.writeText($('#swDiagText').textContent); }catch(e){ /* ignore */ }
-});
-
 initViewer();
 toggleProjection(); // default to orthographic (원근 무시)
+</script>
+<script>
+/* PWA 오프라인 지원 (STEP Viewer와 같은 방식): 서비스워커가 앱 본체를 기기에 저장해 두면
+   인터넷이 없어도(또는 서버의 파일이 지워져도) 저장된 본체로 실행된다. http/https에서만 동작.
+   제목 옆 점: 초록=오프라인 사용 가능, 주황=저장 중/앱을 다시 열어야 함, 빨강=저장 안 됨. 점을 누르면 자세한 상태. */
+var APP_CACHE = 'packing-v7.05';   // sw.js 의 CACHE 와 반드시 같은 이름
+(function(){
+  var supported = ('serviceWorker' in navigator) && /^https?:$/.test(location.protocol);
+  var dot = document.getElementById('offlineDot');
+  var toast = document.getElementById('swToast');
+  var panel = document.getElementById('swDiag'), pre = document.getElementById('swDiagText');
+  if(!supported){ if(dot) dot.style.display = 'none'; return; }   // 로컬 파일로 열면 이미 완전히 독립적
+  var installError = '', registerError = '', healError = '';
+  function tr(key){ try{ return (typeof t === 'function') ? t(key) : key; }catch(e){ return key; } }
+  function note(key, ms){
+    toast.textContent = tr(key); toast.style.display = 'block';
+    clearTimeout(toast._t); toast._t = setTimeout(function(){ toast.style.display = 'none'; }, ms || 8000);
+  }
+  function setLevel(level){
+    dot.dataset.state = level === 'green' ? 'ready' : level === 'yellow' ? 'preparing' : 'unavailable';
+    dot.title = tr(level === 'green' ? 'offlineReady' : level === 'yellow' ? 'offlinePreparing' : 'offlineUnavailable');
+  }
+  function sleep(ms){ return new Promise(function(r){ setTimeout(r, ms); }); }
+  async function hasAppIndex(){
+    try{
+      if(!(await caches.has(APP_CACHE))) return false;
+      var cache = await caches.open(APP_CACHE);
+      return !!(await cache.match('./index.html'));
+    }catch(e){ return false; }
+  }
+  async function diagnose(){
+    var L = [], level = 'red';
+    L.push('v7.05 | 주소: ' + location.href);
+    L.push('보안 컨텍스트(https): ' + (window.isSecureContext ? '예' : '아니오'));
+    var reg = null;
+    try{ reg = await navigator.serviceWorker.getRegistration(); }catch(e){ L.push('등록 조회 오류: ' + e.message); }
+    L.push('서비스워커 등록: ' + (reg ? '예' : '아니오'));
+    if(reg){
+      var w = reg.active ? 'active' : (reg.waiting ? 'waiting' : (reg.installing ? 'installing(설치 중)' : '없음'));
+      L.push('상태: ' + w + ' / 현재 페이지 제어: ' + (navigator.serviceWorker.controller ? '예' : '아니오'));
+    }
+    if(registerError) L.push('등록 오류: ' + registerError);
+    if(installError) L.push('설치 오류(서비스워커 보고): ' + installError);
+    if(healError) L.push('저장 재시도 오류: ' + healError);
+    var hasIndex = false;
+    try{
+      var names = await caches.keys();
+      var others = names.filter(function(n){ return n !== APP_CACHE; });
+      L.push('이 앱 저장소: ' + (names.indexOf(APP_CACHE) >= 0 ? APP_CACHE : '(없음)'));
+      if(others.length) L.push('같은 주소의 다른 저장소: ' + others.join(', '));
+      if(names.indexOf(APP_CACHE) >= 0){
+        var cache = await caches.open(APP_CACHE);
+        var keys = await cache.keys();
+        keys.forEach(function(r){ if(/index\.html$|\/$/.test(new URL(r.url).pathname)) hasIndex = true; });
+        L.push('저장된 파일 ' + keys.length + '개: ' + keys.map(function(r){ return new URL(r.url).pathname.split('/').pop() || '(index)'; }).join(', '));
+      }
+    }catch(e){ L.push('저장소 조회 오류: ' + e.message); }
+    try{
+      if(navigator.storage && navigator.storage.estimate){
+        var est = await navigator.storage.estimate();
+        L.push('저장 공간: ' + Math.round((est.usage||0)/1048576) + 'MB 사용 / 허용 ' + Math.round((est.quota||0)/1048576) + 'MB');
+      }
+    }catch(e){}
+    if(hasIndex && navigator.serviceWorker.controller) level = 'green';
+    else if(hasIndex) level = 'yellow';
+    L.push(level === 'green' ? '=> 오프라인 사용 가능' :
+           level === 'yellow' ? '=> 저장은 됐지만 아직 이 페이지를 제어하지 않음. 앱을 완전히 닫았다가 다시 여세요' :
+           '=> 오프라인 저장이 안 되어 있음. 인터넷이 되는 곳에서 "저장 초기화 후 다시 받기"를 누르세요');
+    return {text: L.join('\n'), level: level};
+  }
+  async function runCheck(){
+    var out = await diagnose();
+    setLevel(out.level);
+    pre.textContent = out.text;
+    panel.style.display = 'flex';
+  }
+  // 이 앱의 서비스워커와 저장소만 지운다(같은 주소의 다른 앱 것은 건드리지 않는다)
+  async function resetAndReload(){
+    try{
+      var reg = await navigator.serviceWorker.getRegistration();
+      if(reg) await reg.unregister();
+      var names = await caches.keys();
+      for(var j = 0; j < names.length; j++) if(names[j].indexOf('packing-') === 0) await caches.delete(names[j]);
+    }catch(e){}
+    location.reload();
+  }
+  // 서비스워커는 이미 활성인데 저장소만 비어 있는 경우(다른 앱이 지웠거나 브라우저가 정리)에는
+  // 새 설치가 일어나지 않으므로 화면이 직접 본체를 다시 받아 저장한다.
+  async function heal(){
+    try{
+      var reg = await navigator.serviceWorker.getRegistration();
+      if(!reg || !reg.active || reg.installing || reg.waiting) return;
+      var cache = await caches.open(APP_CACHE);
+      await cache.add(new Request('./index.html', {cache: 'reload'}));
+    }catch(e){ healError = (e && e.name ? e.name + ': ' : '') + (e && e.message ? e.message : String(e)); }
+  }
+  async function refreshLevel(){
+    if(await hasAppIndex()) setLevel(navigator.serviceWorker.controller ? 'green' : 'yellow');
+  }
+  async function watch(){
+    var already = await hasAppIndex();
+    if(already) await refreshLevel(); else { setLevel('yellow'); note('offlinePreparing', 8000); }
+    for(var i = 0; i < 120; i++){
+      if(await hasAppIndex()){
+        await refreshLevel();
+        if(!already) note('offlineReady', 8000);
+        return;
+      }
+      if(registerError || installError) break;
+      if(i === 6) await heal();
+      await sleep(1000);
+    }
+    setLevel('red'); note('offlineUnavailable', 12000);
+  }
+  window.addEventListener('load', function(){
+    dot.addEventListener('click', runCheck);
+    document.getElementById('swDiagClose').addEventListener('click', function(){ panel.style.display = 'none'; });
+    document.getElementById('swDiagCopy').addEventListener('click', function(){
+      try{ navigator.clipboard.writeText(pre.textContent); }catch(e){}
+    });
+    document.getElementById('swDiagReset').addEventListener('click', function(){
+      if(confirm('저장된 앱을 지우고 다시 받습니다. 인터넷이 연결되어 있어야 합니다. 계속할까요?')) resetAndReload();
+    });
+    navigator.serviceWorker.addEventListener('message', function(ev){
+      if(ev.data && ev.data.type === 'sw-install-error') installError = ev.data.msg;
+    });
+    navigator.serviceWorker.addEventListener('controllerchange', refreshLevel);
+    navigator.serviceWorker.register('./sw.js').then(function(reg){
+      reg.addEventListener('updatefound', function(){
+        var nw = reg.installing;
+        if(!nw) return;
+        nw.addEventListener('statechange', function(){
+          if(nw.state === 'installed' && navigator.serviceWorker.controller)
+            { toast.textContent = '새 버전이 준비되었습니다. 앱을 완전히 닫았다가 다시 열면 적용됩니다.'; toast.style.display = 'block'; clearTimeout(toast._t); toast._t = setTimeout(function(){ toast.style.display = 'none'; }, 10000); }
+        });
+      });
+    }).catch(function(err){ registerError = (err && err.name ? err.name + ': ' : '') + (err && err.message ? err.message : String(err)); });
+    watch();
+    if(navigator.storage && navigator.storage.persist){ navigator.storage.persist().catch(function(){}); }
+  });
+})();
 </script>
 </body>
 </html>

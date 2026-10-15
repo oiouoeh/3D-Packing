@@ -1,51 +1,64 @@
-// Service worker for 3D Packing Optimizer.
-// IMPORTANT: change CACHE to a new name (e.g. 'packing-v7.05') every time you
-// publish a new version of index.html, otherwise phones keep showing the old one.
-const CACHE = 'packing-v7.04';
-const CORE = './index.html';
-const EXTRA = ['./manifest.webmanifest', './icon-192.png', './icon-512.png', './icon-512-maskable.png'];
+// 3D Packing Optimizer 서비스워커 (STEP Viewer와 같은 방식)
+// 새 버전을 올릴 때마다 CACHE 이름의 버전을 바꾸세요. (index.html 의 APP_CACHE 도 같은 이름으로)
+//
+// 중요: 같은 주소(예: oiouoeh.github.io)에 올린 다른 앱(STEP Viewer 등)과 저장소(Cache Storage)를
+// 공유합니다. 그래서 정리할 때는 반드시 내 접두어('packing-')가 붙은 것만 지웁니다.
+// ("내 이름이 아닌 건 전부 삭제" 방식은 다른 앱의 오프라인 저장본을 지워버립니다.)
+const PREFIX = 'packing-';
+const CACHE = PREFIX + 'v7.05';
+const OPTIONAL = ['./manifest.webmanifest', './icon-192.png', './icon-512.png', './icon-512-maskable.png'];
+const BASE = new URL('./', self.location).pathname;   // 예: '/packing/' 또는 '/'
 
-self.addEventListener('install', (e) => {
+self.addEventListener('install', e => {
   e.waitUntil((async () => {
     try {
       const cache = await caches.open(CACHE);
-      // The page is ~12 MB: download it ONCE (revalidating, so an unchanged copy
-      // already in the browser's HTTP cache is reused instead of re-downloaded),
-      // and store it under both URLs the app can be opened from.
-      const res = await fetch(CORE, { cache: 'no-cache' });
-      if (!res.ok) throw new Error('index.html fetch failed: HTTP ' + res.status);
-      const copy = res.clone();
-      await cache.put('./index.html', res);
-      await cache.put('./', copy);
-      // Small files: best effort, a missing icon must not break offline use.
-      await Promise.all(EXTRA.map((u) => cache.add(u).catch(() => {})));
+      // 앱 본체는 필수이고 한 번만 저장한다. 못 받으면 설치를 실패시켜 반쪽짜리 서비스워커가 활성화되지 않게 한다.
+      await cache.add(new Request('./index.html', { cache: 'reload' }));
+      // 나머지는 하나가 실패해도 설치를 막지 않는다.
+      await Promise.all(OPTIONAL.map(u => cache.add(new Request(u, { cache: 'reload' })).catch(() => {})));
     } catch (err) {
-      // Tell the open page WHY it failed so the diagnostics panel can show it.
+      // 열려 있는 화면에 실패 이유를 알려서 진단 창에 표시되게 한다.
       const msg = (err && err.name ? err.name + ': ' : '') + (err && err.message ? err.message : String(err));
-      const clients = await self.clients.matchAll({ includeUncontrolled: true });
-      clients.forEach((c) => c.postMessage({ type: 'sw-install-error', msg }));
+      const cs = await self.clients.matchAll({ includeUncontrolled: true });
+      cs.forEach(c => c.postMessage({ type: 'sw-install-error', msg }));
       throw err;
     }
+    await self.skipWaiting();
   })());
-  self.skipWaiting();
 });
 
-self.addEventListener('activate', (e) => {
-  e.waitUntil(
-    caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
-      .then(() => self.clients.claim())
-  );
+self.addEventListener('activate', e => {
+  e.waitUntil(caches.keys()
+    .then(keys => Promise.all(keys.filter(k => k.indexOf(PREFIX) === 0 && k !== CACHE).map(k => caches.delete(k))))
+    .then(() => self.clients.claim()));
 });
 
-self.addEventListener('fetch', (e) => {
+// 저장된 본체를 돌려준다. 저장소가 비어 있으면(다른 앱이 지웠거나 브라우저가 정리했을 때)
+// 온라인일 때 한 번 받아서 다시 채워 둔다.
+async function serveApp(req) {
+  const cache = await caches.open(CACHE);
+  const hit = await cache.match('./index.html');
+  if (hit) return hit;
+  const res = await fetch(req);
+  if (res.ok && !res.redirected) cache.put('./index.html', res.clone()).catch(() => {});
+  return res;
+}
+
+self.addEventListener('fetch', e => {
   const req = e.request;
   if (req.method !== 'GET') return;
+  const url = new URL(req.url);
+  if (url.origin !== self.location.origin) return;
   if (req.mode === 'navigate') {
-    // However the app is launched (home-screen icon, with a ?query, with or
-    // without index.html) always answer with the cached page, never the network.
-    e.respondWith(caches.match('./index.html').then((r) => r || fetch(req)));
+    // 이 앱의 주소(폴더 주소 또는 index.html)만 처리한다. 같은 사이트의 다른 앱 주소는 건드리지 않는다.
+    if (url.pathname !== BASE && url.pathname !== BASE + 'index.html') return;
+    e.respondWith(serveApp(req));
     return;
   }
-  e.respondWith(caches.match(req, { ignoreSearch: true }).then((r) => r || fetch(req)));
+  if (url.pathname.indexOf(BASE) !== 0) return;
+  e.respondWith(
+    caches.open(CACHE).then(c => c.match(req, { ignoreSearch: true }))
+      .then(hit => hit || fetch(req).catch(() => Response.error()))
+  );
 });
